@@ -1,5 +1,5 @@
 #!/bin/bash
-# build_ot_rcp.sh — Build OpenThread RCP firmware for EFR32MG1B232F256GM48
+# build_ot_rcp.sh — Build OpenThread RCP firmware for EFR32MG13P732HI
 #
 # This builds an OpenThread RCP firmware for Thread/Matter networks.
 # Compatible with ot-br-posix (OpenThread Border Router).
@@ -36,7 +36,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SILABS_TOOLS_DIR="${PROJECT_ROOT}/silabs-tools"
 
 # Target chip
-TARGET_DEVICE="EFR32MG1B232F256GM48"
+TARGET_DEVICE="EFR32MG13P732F512GM32"
 PROJECT_NAME="ot-rcp"
 
 # Default baud — historical OT-RCP default and tested ceiling.

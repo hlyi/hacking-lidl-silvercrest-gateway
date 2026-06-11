@@ -320,9 +320,11 @@ int rtl8196e_hw_init(struct rtl8196e_hw *hw)
 		 * and bits [4:3] (GPIOB3 / LED_PORT1 — status LED),
 		 * both managed by the gpio-leds-pwm driver. */
 		regmap_update_bits(hw->syscon, 0x44,
+				   (3 << 0) | (3 << 3) |
 				   (3 << 6) | (3 << 9) |
-				   (3 << 12) | (7 << 15),
-				   0);
+				   (3 << 12),
+				   (3 << 3) | ( 3<<6 ) |
+				   (3 << 9) | ( 3<<12)) ;
 	}
 
 	/* Ensure switch core clock is active (vendor sequence) */

@@ -57,7 +57,7 @@
 #define DIR_OFFSET          0x08u
 #define DATA_OFFSET         0x0Cu
 
-#define BUTTON_BIT          9
+#define BUTTON_BIT          14
 #define BUTTON_MASK         (1u << BUTTON_BIT)
 
 #define POLL_INTERVAL_MS    100
@@ -177,7 +177,7 @@ int main(void)
         if (!button_pressed()) {
             if (!armed) {
                 syslog(LOG_NOTICE,
-                       "GPIO 9 idle (HIGH), press detector armed");
+                       "GPIO 14 idle (HIGH), press detector armed");
                 armed = 1;
             }
             msleep(POLL_INTERVAL_MS);
@@ -192,7 +192,7 @@ int main(void)
 
         if (gpio_in_peripheral_mode()) {
             syslog(LOG_WARNING,
-                   "GPIO 9 reverted to peripheral mode (CNR=0x%08x), "
+                   "GPIO 14 reverted to peripheral mode (CNR=0x%08x), "
                    "restoring + disarming",
                    reg_read(CNR_OFFSET));
             configure_gpio();

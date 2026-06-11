@@ -1,13 +1,13 @@
-# OpenThread RCP for Lidl Silvercrest Gateway
+# OpenThread RCP for Sengled Smart Hub G4
 # Based on SDK sample: protocol/openthread/sample-apps/ot-ncp/ot-rcp.slcp
-# Target: EFR32MG1B232F256GM48
+# Target: EFR32MG13P732HI
 # UART: USART0, PA0/PA1/PA4/PA5, 460800 baud, HW flow control
 
 project_name: ot-rcp
-label: OpenThread - RCP (Lidl Gateway)
+label: OpenThread - RCP (Sengled Smart Hub)
 package: OpenThread
 description: >
-  OpenThread RCP for Lidl Silvercrest Gateway (EFR32MG1B232F256GM48).
+  OpenThread RCP for Sengled Smart Hub G4 (EFR32MG13P732HI).
   For Thread/Matter or Zigbee via zigbee-on-host.
 category: OpenThread Examples
 quality: production
@@ -43,7 +43,7 @@ configuration:
     value: 0
   # Hardware flow control (GPIO-managed, must match the gateway UART bridge CRTSCTS)
   - name: SL_UARTDRV_USART_VCOM_FLOW_CONTROL_TYPE
-    value: uartdrvFlowControlHw
+    value: uartdrvFlowControlSw
     condition: [uartdrv_usart]
 
 tag:

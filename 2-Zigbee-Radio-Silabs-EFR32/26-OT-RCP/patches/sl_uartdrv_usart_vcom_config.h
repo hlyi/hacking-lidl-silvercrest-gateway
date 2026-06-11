@@ -4,7 +4,7 @@
  *******************************************************************************
  * SPDX-License-Identifier: Zlib
  *
- * Target: EFR32MG1B232F256GM48
+ * Target: EFR32MG13P732HI
  * UART: USART0, 460800 baud, HW flow control
  * Pins: TX=PA0, RX=PA1, RTS=PA4, CTS=PA5
  ******************************************************************************/
@@ -41,7 +41,7 @@
 // <uartdrvFlowControlHw=> nRTS/nCTS hardware handshake
 // <uartdrvFlowControlHwUart=> UART peripheral controls nRTS/nCTS
 // <i> Default: uartdrvFlowControlHw
-#define SL_UARTDRV_USART_VCOM_FLOW_CONTROL_TYPE uartdrvFlowControlHw
+#define SL_UARTDRV_USART_VCOM_FLOW_CONTROL_TYPE uartdrvFlowControlSw
 
 // <o SL_UARTDRV_USART_VCOM_OVERSAMPLING> Oversampling selection
 // <usartOVS16=> 16x oversampling
@@ -85,14 +85,14 @@
 #define SL_UARTDRV_USART_VCOM_RX_LOC             0
 
 // USART0 CTS on PA5, Location 30
-#define SL_UARTDRV_USART_VCOM_CTS_PORT           gpioPortA
-#define SL_UARTDRV_USART_VCOM_CTS_PIN            5
-#define SL_UARTDRV_USART_VCOM_CTS_LOC            30
+// #define SL_UARTDRV_USART_VCOM_CTS_PORT           gpioPortA
+// #define SL_UARTDRV_USART_VCOM_CTS_PIN            5
+// #define SL_UARTDRV_USART_VCOM_CTS_LOC            30
 
 // USART0 RTS on PA4, Location 30
-#define SL_UARTDRV_USART_VCOM_RTS_PORT           gpioPortA
-#define SL_UARTDRV_USART_VCOM_RTS_PIN            4
-#define SL_UARTDRV_USART_VCOM_RTS_LOC            30
+// #define SL_UARTDRV_USART_VCOM_RTS_PORT           gpioPortA
+// #define SL_UARTDRV_USART_VCOM_RTS_PIN            4
+// #define SL_UARTDRV_USART_VCOM_RTS_LOC            30
 
 // [USART_SL_UARTDRV_USART_VCOM]$
 // <<< sl:end pin_tool >>>

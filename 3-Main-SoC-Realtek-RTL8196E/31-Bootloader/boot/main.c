@@ -132,7 +132,7 @@ void showBoardInfo(void)
 
 	cpu_speed = check_cpu_speed();
 
-	prom_printf("Realtek RTL8196E  CPU: %dMHz  RAM: 32MB  Flash: %s\n",
+	prom_printf("Realtek RTL8196E  CPU: %dMHz  RAM: 64MB  Flash: %s\n",
 		    cpu_speed, g_flash_chip_name);
 	prom_printf("Bootloader: %s - %s - J. Nilo\n", B_VERSION, BOOT_CODE_TIME);
 }
