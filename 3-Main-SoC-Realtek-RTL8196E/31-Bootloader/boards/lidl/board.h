@@ -31,4 +31,14 @@
 #define BOARD_DDR_REG_1004 0x54480000	/* -> 0xB8001004 */
 #define BOARD_DDR_REG_1008 0x90E36920	/* -> 0xB8001008: 32 MB DDR1 @ 193 MHz */
 
+/*
+ * RF reset pad (mandatory).
+ *
+ * The EFR32 nRST line, active-low: RTL GPIO 12 / pad B4 on this board
+ * (the same pad the kernel DTS declares as `efr32-nrst`).  Referenced
+ * only when the bootloader is built with HOLD_RF_RESET=1 — see
+ * boards/sengled-e39-g8c/board.h for the full contract.
+ */
+#define BOARD_RF_RESET_GPIO 12
+
 #endif /* __BOARD_H__ */

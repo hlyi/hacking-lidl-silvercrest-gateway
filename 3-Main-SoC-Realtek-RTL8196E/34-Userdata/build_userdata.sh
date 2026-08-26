@@ -2,18 +2,20 @@
 # build_userdata.sh — Build JFFS2 userdata partition for RTL8196E
 #
 # By default, this script packages the JFFS2 image from the binaries already
-# committed in skeleton/usr/bin/ — boothold, nano, otbr-agent, ot-ctl, vi —
-# and skeleton/usr/sbin/ — s40button and friends.  WireGuard is NOT built or
-# installed here: see wireguard/README.md.
+# committed in skeleton/usr/bin/ — boothold, nano, otbr-agent, ot-ctl, vi,
+# serialgateway — and skeleton/usr/sbin/ — s40button and friends.  WireGuard
+# is NOT built or installed here: see wireguard/README.md.
 # It does NOT rebuild those binaries in the default flow.
 #
-# To rebuild all userland binaries (boothold, s40button, nano, otbr-agent,
-# ot-ctl) from source, pass --rebuild-components (full flow) or
+# To rebuild all userland binaries (boothold, s40button, serialgateway, nano,
+# otbr-agent, ot-ctl) from source, pass --rebuild-components (full flow) or
 # --components-only (skip the image). The ot-br-posix step clones a large
 # upstream tree and can take ~30 min on first run.
 #
-# The UART<->TCP bridge (formerly userspace serialgateway) is now in-kernel
-# (CONFIG_RTL8196E_UART_BRIDGE=y in the 6.18 kernel); nothing to build here.
+# The default UART<->TCP bridge is in-kernel (CONFIG_RTL8196E_UART_BRIDGE=y
+# in the 6.18 kernel).  The userspace serialgateway (restored from v2.1.6)
+# ships again on HOLD_RF_RESET=1 builds: there the single kernel bridge
+# instance belongs to ttyS0, so ttyS1 needs a userspace bridge.
 #
 # Usage:
 #   ./build_userdata.sh                       # Package image from skeleton (default)
@@ -28,6 +30,9 @@
 #   +-----------------+----------------------------------------------+-------------+
 #   | boothold        | boothold/src/boothold.c (local)              | MIT         |
 #   | s40button       | s40button/src/s40button.c (local)            | MIT         |
+#   | keepalive       | keepalive/src/keepalive.c (local)            | MIT         |
+#   | serialgateway   | serialgateway/src/ (local, from v2.1.6)      | GPL-3.0     |
+#   | otbr-monitor    | otbr-monitor/src/otbr-monitor.c (local)      | MIT         |
 #   | nano            | https://www.nano-editor.org/                 | GPL-3.0     |
 #   | ncursesw        | https://ftp.gnu.org/gnu/ncurses/             | MIT         |
 #   | otbr-agent      | https://github.com/openthread/ot-br-posix    | BSD-3       |
@@ -144,6 +149,37 @@ cd "${SCRIPT_DIR}"
 
 log() { [ "$QUIET" -eq 0 ] && echo "$@" || true; }
 
+# --- HOLD_RF_RESET ----------------------------------------------------------
+# Same flag and values as build_bootloader.sh / build_rootfs.sh: set it when
+# building images for a unit with an external device on ttyS0 (e.g. an ESP32
+# BLE proxy).  In that configuration the packaged /userdata/etc/inittab has
+# its ttyS0 getty line commented out from the start (using the #[altuart0]
+# marker that altuart0's 'console' action later removes to bring the getty
+# back), and the userspace TCP<->serial bridge (serialgateway, restored from
+# v2.1.6) is guaranteed to ship in the image: the kernel uart_bridge is a
+# single instance owned by ttyS0 there, so a second link for ttyS1 needs the
+# userspace bridge.  Default builds keep the active getty line and do not
+# touch serialgateway.
+# Flag parsing lives in the shared checker: lib/hold_rf_reset.sh.
+LIB_DIR="${PROJECT_ROOT}/../lib"
+if [ ! -f "${LIB_DIR}/hold_rf_reset.sh" ]; then
+    echo "ERROR: ${LIB_DIR}/hold_rf_reset.sh not found" >&2
+    exit 1
+fi
+# shellcheck disable=SC1091
+. "${LIB_DIR}/hold_rf_reset.sh"
+hold_rf_reset_parse || exit 1
+
+# --- /userdata/etc/inittab ---------------------------------------------------
+# Generated at image-build time from the rootfs skeleton's stock inittab
+# (single source of truth — 33-Rootfs/skeleton/etc/inittab), with the
+# ::sysinit entry stripped: a sysinit action in this re-read table would
+# re-run rcS on every SIGHUP.  The generated file is a build artifact,
+# not tracked in git.
+
+INITTAB="skeleton/etc/inittab"
+ROOTFS_INITTAB="${PROJECT_ROOT}/33-Rootfs/skeleton/etc/inittab"
+
 # Build components if requested
 if [ "$BUILD_COMPONENTS" -eq 1 ]; then
     echo "========================================="
@@ -152,6 +188,7 @@ if [ "$BUILD_COMPONENTS" -eq 1 ]; then
     echo "  boothold          reboot-to-bootloader helper"
     echo "  s40button         front-panel button daemon"
     echo "  keepalive         process supervisor (issue #109)"
+    echo "  serialgateway     userspace TCP<->serial bridge (v2.1.6 revival)"
     echo "  otbr-monitor      OTBR housekeeping daemon (C)"
     echo "  nano              editor (with vi symlink)"
     echo "  otbr-agent+ot-ctl OpenThread Border Router (~30 min on first run)"
@@ -189,6 +226,18 @@ if [ "$BUILD_COMPONENTS" -eq 1 ]; then
         "${SCRIPT_DIR}/keepalive/build_keepalive.sh"
     else
         echo "Error: keepalive/build_keepalive.sh not found or not executable"
+        exit 1
+    fi
+    echo ""
+
+    # Build serialgateway (userspace TCP<->serial bridge, restored from v2.1.6)
+    echo "========================================="
+    echo "  BUILDING SERIALGATEWAY"
+    echo "========================================="
+    if [ -x "${SCRIPT_DIR}/serialgateway/build_serialgateway.sh" ]; then
+        "${SCRIPT_DIR}/serialgateway/build_serialgateway.sh"
+    else
+        echo "Error: serialgateway/build_serialgateway.sh not found or not executable"
         exit 1
     fi
     echo ""
@@ -259,6 +308,45 @@ if [ ! -d "$SKELETON_DIR" ]; then
     exit 1
 fi
 
+# Generate /userdata/etc/inittab from the rootfs skeleton's stock file
+# (::sysinit stripped — see the comment at the top of this script).
+INITTAB="${SKELETON_DIR}/etc/inittab"
+if [ ! -f "$ROOTFS_INITTAB" ]; then
+    echo "rootfs skeleton inittab not found: $ROOTFS_INITTAB" >&2
+    exit 1
+fi
+log "📝 Generating ${INITTAB} (from 33-Rootfs skeleton, ::sysinit stripped)..."
+{
+    echo "# /userdata/etc/inittab - GENERATED by build_userdata.sh; do not edit."
+    echo "# Source of truth: 33-Rootfs/skeleton/etc/inittab with the ::sysinit"
+    echo "# entry stripped (a sysinit action here would re-run rcS on every"
+    echo "# SIGHUP).  init runs on built-in fallback defaults until"
+    echo "# S99enablealtuart0 re-reads this table (kill -HUP 1)."
+    echo "#"
+    echo "# Alt-uart0 mode (external device on ttyS0) = the getty line below"
+    echo "# commented out with the #[altuart0] marker - see altuart0.common."
+    # Action lines only: drop ::sysinit and the rootfs file's comments,
+    # which describe the squashfs side and would be wrong here.
+    grep -v -e '^::sysinit:' -e '^#' "$ROOTFS_INITTAB"
+} > "$INITTAB"
+
+# rf-hold build: package the getty line already commented out (same
+# #[altuart0] marker S99enablealtuart0 uses, so its 'console' subcommand
+# restores it).  Stock builds keep the active getty line.
+if [ "$RF_HOLD" = "1" ]; then
+    log "🔇 /userdata/etc/inittab: getty line pre-commented (rf-hold build)"
+    sed -i 's|^ttyS0::respawn:|#[altuart0] ttyS0::respawn:|' "$INITTAB"
+fi
+
+# rf-hold build: guarantee the userspace TCP<->serial bridge ships in the
+# image (restored from v2.1.6; see the HOLD_RF_RESET note above).  The
+# prebuilt binary is tracked in skeleton/usr/bin; rebuild it only when
+# missing — same policy as dropbearmulti in build_rootfs.sh.
+if [ "$RF_HOLD" = "1" ] && [ ! -f "${INSTALL_DIR}/serialgateway" ]; then
+    echo "HOLD_RF_RESET=1 requires serialgateway — building it..."
+    "${SCRIPT_DIR}/serialgateway/build_serialgateway.sh"
+fi
+
 log "Binaries installed:"
 if [ "$QUIET" -eq 0 ]; then
     ls -lh "$INSTALL_DIR" 2>/dev/null || echo "  (none)"
@@ -318,7 +406,8 @@ log "========================================="
 log "  BUILD SUMMARY"
 log "========================================="
 if [ "$BUILD_COMPONENTS" -eq 1 ] && [ "$QUIET" -eq 0 ]; then
-    echo "  Components: boothold, nano (vi -> nano symlink), otbr-agent, ot-ctl"
+    echo "  Components: boothold, s40button, keepalive, serialgateway, otbr-monitor,"
+    echo "              nano (vi -> nano symlink), otbr-agent, ot-ctl"
 fi
 log ""
 if [ "$QUIET" -eq 0 ]; then
@@ -326,5 +415,6 @@ if [ "$QUIET" -eq 0 ]; then
     echo ""
 fi
 log "Userdata image ready: userdata.bin ($(ls -lh userdata.bin | awk '{print $5}'))"
+log "RF hold:   $RF_HOLD (getty pre-commented in image: $([ "$RF_HOLD" = 1 ] && echo yes || echo no))"
 log ""
 log "To flash: ./flash_userdata.sh"

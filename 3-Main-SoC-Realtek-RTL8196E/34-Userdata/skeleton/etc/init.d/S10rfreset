@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# S10rfreset — release the shared RF reset early on units that do not
+#              hand ttyS0 to an external device.
+#
+# A bootloader flashed with HOLD_RF_RESET=1 (see build_bootloader.sh)
+# drives the board's RF reset pad (BOARD_RF_RESET_GPIO) LOW from the
+# first instruction of boot and stamps an "RFHD" marker word into the
+# reserved boothold DRAM page, so any device wired onto that line stays
+# silent while the loader polls ttyS0 for ESC.  Someone must release the
+# line afterwards or the EFR32 never starts:
+#
+#   - alt-uart0 mode active -> altuart0 start releases it late,
+#                             after the bridge owns ttyS0;
+#   - otherwise             -> this script releases it now, early in
+#                              boot, so the radio starts normally.
+#
+# All RFHD marker handling (DT lookup, /dev/mem read, magic compare,
+# one-shot consume) lives in /etc/init.d/altuart0 — see chk_rfmagic /
+# consume_rfmagic there.  This script only decides WHEN to release.
+#
+
+ALTUART0="$(dirname "$0")/altuart0"
+
+SYSFS="/sys/module/rtl8196e_uart_bridge/parameters"
+
+case "$1" in
+start)
+    # In alt-uart0 mode the release belongs to altuart0 start,
+    # after the bridge owns ttyS0.
+    if "$ALTUART0" chk_enabled; then
+        echo "  rfreset: held (alt-uart0 mode - altuart0 start will release)"
+        exit 0
+    fi
+
+    # Stock bootloader, missing DT node or unreadable page: nothing we
+    # can do here (diagnostics, if any, came from altuart0).
+    "$ALTUART0" chk_rfmagic || exit 0
+
+    # Bootloader holds the line: consume the one-shot marker, then
+    # pulse-release via the bridge driver's nrst_pulse knob (claims the
+    # already-low GPIO, asserts for 100 ms, releases open-drain — never
+    # driven HIGH).
+    "$ALTUART0" consume_rfmagic || exit 0
+    if [ -w "$SYSFS/nrst_pulse" ]; then
+        echo 1 > "$SYSFS/nrst_pulse"
+        echo "  rfreset: released bootloader RF-reset hold (gpio pulse)"
+    else
+        echo "  rfreset: WARNING marker consumed but nrst_pulse unavailable;" \
+             "radio may stay in reset until something pulses it" >&2
+    fi
+    ;;
+
+stop|restart|reload|status)
+    exit 0
+    ;;
+
+*)
+    echo "Usage: $0 {start|stop|status}"
+    exit 1
+    ;;
+esac
+
+exit 0

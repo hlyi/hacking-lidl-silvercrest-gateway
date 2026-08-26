@@ -30,6 +30,8 @@
 
 SYSFS="/sys/module/rtl8196e_uart_bridge/parameters"
 
+ALTUART0="$(dirname "$0")/altuart0"
+
 case "$1" in
 start)
     # Skip if the bridge module is not loaded (e.g. running 5.10 kernel)
@@ -40,6 +42,15 @@ start)
     # Skip if radio is configured for OTBR
     if [ -f /userdata/etc/radio.conf ] && grep -q '^MODE=otbr' /userdata/etc/radio.conf; then
         echo "  uart-bridge: skipped (radio mode: otbr)"
+        exit 0
+    fi
+
+    # The kernel bridge is a single instance.  In alt-uart0 mode (see
+    # /etc/init.d/altuart0) the bridge is handed to ttyS0 by
+    # S99enablealtuart0; ttyS1 then serves a standalone z3-router that
+    # needs no host link.
+    if "$ALTUART0" chk_enabled; then
+        echo "  uart-bridge: skipped (alt-uart0 mode - S99enablealtuart0 owns the bridge)"
         exit 0
     fi
 

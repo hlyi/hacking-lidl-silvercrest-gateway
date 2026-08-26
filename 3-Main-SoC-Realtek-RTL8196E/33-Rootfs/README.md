@@ -23,7 +23,7 @@ The rootfs contains only a **minimal bootstrap** in `/etc`:
 
 | File | Type | Purpose |
 |------|------|---------|
-| `/etc/inittab` | Real file | Init configuration (required at boot) |
+| `/etc/inittab` | Symlink (rf-hold builds only) | → `/userdata/etc/inittab` (unreadable at first read — init falls back to built-in defaults until `S99enablealtuart0` re-reads via `kill -HUP 1`). Built with `HOLD_RF_RESET=1 ./build_rootfs.sh`; plain builds keep the stock regular file |
 | `/etc/init.d/rcS` | Real file | Bootstrap script (mounts /userdata, runs init scripts) |
 | `/etc/passwd` | Symlink | → `/userdata/etc/passwd` |
 | `/etc/group` | Symlink | → `/userdata/etc/group` |
@@ -49,13 +49,18 @@ Kernel
   ↓
 Mount SquashFS rootfs
   ↓
-/sbin/init reads /etc/inittab
+/sbin/init reads /etc/inittab (rf-hold builds: symlink still dangling —
+/userdata not mounted yet — so busybox falls back to its built-in defaults,
+which run rcS as the sysinit action; plain builds: the regular file, parsed
+normally)
   ↓
 /etc/init.d/rcS (bootstrap):
   1. Mount /proc, /sys, /var (ramfs), /dev/pts
   2. Create MTD device nodes if needed
   3. Mount /userdata (JFFS2 on mtdblock3)
-  4. Execute /userdata/etc/init.d/S??* scripts
+  4. Execute /userdata/etc/init.d/S??* scripts (on rf-hold builds,
+     S99enablealtuart0 ends with kill -HUP 1: init re-reads
+     /userdata/etc/inittab and applies the respawn entries it names)
   ↓
 System ready
 ```
@@ -140,7 +145,8 @@ To customize Dropbear features, edit the `./configure` options in `build_dropbea
 ├── bin/                    # BusyBox symlinks
 ├── sbin/                   # System binaries
 ├── etc/                    # Configuration (minimal bootstrap + symlinks)
-│   ├── inittab             # Init config (real file)
+│   ├── inittab             # regular file; -> /userdata/etc/inittab in
+│   │                       # rf-hold builds (HOLD_RF_RESET=1)
 │   ├── init.d/
 │   │   └── rcS             # Bootstrap script (real file)
 │   ├── passwd              # -> /userdata/etc/passwd

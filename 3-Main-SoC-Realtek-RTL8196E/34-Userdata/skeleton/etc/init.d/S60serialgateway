@@ -1,0 +1,79 @@
+#!/bin/sh
+#
+# S60serialgateway — userspace TCP<->serial bridge for ttyS1 in alt-uart0 mode
+#
+# Runs ONLY when alt-uart0 mode is active (see /etc/init.d/altuart0):
+# there the single kernel uart_bridge instance belongs to ttyS0 — the
+# external device (e.g. an ESP32 BLE proxy), with S50uart_bridge skipped —
+# so the EFR32's z3-router on ttyS1 would have no host link.  serialgateway
+# provides it: TCP <port> <-> /dev/ttyS1, giving Home Assistant direct
+# network access to the Zigbee coordinator.
+#
+# On stock units this exits immediately: the kernel bridge already owns
+# ttyS1 (S50uart_bridge).  Also skipped when radio.conf selects MODE=otbr
+# (otbr-agent manages the UART itself).
+#
+# Baud follows the chip-side truth: FIRMWARE_BAUD from radio.conf (written
+# by flash_efr32.sh on every successful flash), legacy BRIDGE_BAUD as
+# fallback, default 460800 — the same resolution order as S50uart_bridge.
+#
+
+BIN="/usr/bin/serialgateway"
+RADIO_CONF="/userdata/etc/radio.conf"
+PORT=8888
+
+ALTUART0="$(dirname "$0")/altuart0"
+
+read_baud() {
+    BAUD=115200
+    [ -f "$RADIO_CONF" ] || return 0
+    val=$(grep '^FIRMWARE_BAUD=' "$RADIO_CONF" | tail -1 | cut -d= -f2)
+    [ -z "$val" ] && val=$(grep '^BRIDGE_BAUD=' "$RADIO_CONF" | tail -1 | cut -d= -f2)
+    [ -n "$val" ] && BAUD="$val"
+}
+
+otbr_mode() {
+    [ -f "$RADIO_CONF" ] && grep -q '^MODE=otbr' "$RADIO_CONF"
+}
+
+case "$1" in
+start)
+    # Stock units: the kernel bridge owns ttyS1 — nothing to do here.
+    "$ALTUART0" chk_enabled || exit 0
+
+    # Defensive: otbr-agent cannot share /dev/ttyS1 either.
+    if otbr_mode; then
+        echo "  serialgateway: skipped (radio mode: otbr)"
+        exit 0
+    fi
+
+    if [ ! -x "$BIN" ]; then
+        echo "  serialgateway: WARNING $BIN missing (rebuild userdata with" \
+             "HOLD_RF_RESET=1); z3-router has no host link" >&2
+        exit 0
+    fi
+
+    read_baud
+    echo "  serialgateway: tcp://*$PORT <-> /dev/ttyS1 @$BAUD"
+    "$BIN" -p "$PORT" -d /dev/ttyS1 -b "$BAUD" -q
+    ;;
+
+stop)
+    # Only ever running in alt-uart0 mode; harmless to kill regardless.
+    echo "  serialgateway: stopping..."
+    killall serialgateway 2>/dev/null || true
+    ;;
+
+restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+
+*)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
+exit 0

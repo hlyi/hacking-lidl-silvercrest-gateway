@@ -31,4 +31,30 @@
 #define BOARD_DDR_REG_1004 0x54880000	/* -> 0xB8001004 */
 #define BOARD_DDR_REG_1008 0x91051D20	/* -> 0xB8001008: 64 MB DDR2 @ 193 MHz */
 
+/*
+ * RF reset pad (mandatory).
+ *
+ * The EFR32 nRST line, active-low: RTL GPIO 11 / pad B3 on this board
+ * (the same pad the kernel DTS declares as `efr32-nrst`).  Referenced
+ * only when the bootloader is built with HOLD_RF_RESET=1 (see
+ * build_bootloader.sh): the loader then drives the pad LOW from the
+ * first instruction of start_kernel() and keeps it there until
+ * userspace releases it (nrst_pulse), so a device wired to that line —
+ * e.g. an ESP32 BLE proxy whose CHIP_EN shares nRST — cannot drive
+ * ttyS0 while the loader polls it for ESC.  It also leaves an "RFHD"
+ * marker word in the boothold page so userspace can tell that the hold
+ * happened.
+ *
+ * Contract — the code built around this macro only ever:
+ *   - asserts the gate by DRIVING THE PAD LOW;
+ *   - de-asserts by switching the pad to input (open-drain release);
+ * it never drives the line HIGH.  The pull-up on nRST provides the
+ * released-high level.
+ *
+ * Must be a port-B pad shared with the ASIC LED controller
+ * (GPIO 10–14): those are the only pins whose PIN_MUX_SEL2 mux field
+ * the switch-core init touches (and therefore preserves).
+ */
+#define BOARD_RF_RESET_GPIO 11
+
 #endif /* __BOARD_H__ */

@@ -1,0 +1,318 @@
+#!/bin/sh
+#
+# altuart0 - service for handing ttyS0 to an external device (e.g. an
+#            ESP32 BLE proxy) via the kernel UART bridge, plus the mode
+#            derivation shared by the other init scripts.
+#
+# NOT named S??*: rcS/rcK never run it directly.  S99enablealtuart0 is a
+# thin boot-order shim around this script (runs last, then reloads init's
+# table); interactive use should call this script.
+#
+# Mode derivation: there is no ENABLE_ALT_UART0 switch anywhere.  Whether
+# ttyS0 belongs to an external device is derived from /userdata/etc/inittab,
+# where the ttyS0 getty respawn entry commented out with the #[altuart0]
+# marker means "external device owns ttyS0".  Userdata images built with
+# HOLD_RF_RESET=1 (see build_userdata.sh) ship with the marker present.
+#
+# Actions:
+#   chk_enabled       exit 0 if alt-uart0 mode is active (no side effects)
+#   status            human-readable state (+ bridge info when armed)
+#   start             handover (only acts when mode is active):
+#   1. takes the kernel UART bridge away from S50uart_bridge,
+#   2. stops the serial getty (the inittab line is commented out so the
+#      caller's table reload below does not respawn it),
+#   3. optionally unbinds/rebinds the of_serial platform device so ttyS0
+#      comes up fresh with no inherited console holders (ALT_UNBIND=1;
+#      experimental — see alt-uart0.conf.example),
+#   4. silences kernel printk on the console (dmesg -n 1),
+#   5. arms the bridge as TCP <ALT_PORT> <-> /dev/ttyS0 at ALT_BAUD with
+#      flow_control=none ('sw' would strip 0x11/0x13 bytes from the
+#      stream — mandatory for a binary protocol),
+#   6. consumes the bootloader "RFHD" hold marker if still present, and
+#   7. releases the shared RF reset ~10 s later, backgrounded: the
+#      external device (and EFR32) boot together, after init has re-read
+#      its table and gone quiet on ttyS0.  The bootloader must have been
+#      flashed with HOLD_RF_RESET=1 so the line is LOW until then.
+#
+#   NOTE: no action here runs `kill -HUP 1` — reloading init's table is
+#   the caller's job (S99 does it gated on /etc/inittab being a symlink).
+#
+#   The kernel bridge instance is PERMANENTLY bound to ttyS0 (:6053) in
+#   this mode — it is never retargeted.  The EFR32's host link on ttyS1
+#   (:8888) is the userspace serialgateway daemon (S60serialgateway), and
+#   EFR32 flashing simply goes through it: flash_efr32.sh talks
+#   socket://<gw>:8888, which serialgateway serves unchanged.
+#
+#   To give the serial console back:
+#   disable the marker first (this script cannot re-read init's table):
+#   sed -i 's|^#\(\[altuart0\] ttyS0::respawn:\)|\1|' /userdata/etc/inittab
+#   altuart0 console            # disarm + printk back; then S99/HUP
+#
+
+SYSFS="/sys/module/rtl8196e_uart_bridge/parameters"
+CONF="/userdata/etc/alt-uart0.conf"
+INITTAB="/userdata/etc/inittab"
+LOG="/var/log/alt-uart0.log"
+PLAT_DEV="18002000.serial"          # UART0 platform device (of_serial)
+PLAT_DRV="/sys/bus/platform/drivers/of_serial"
+BOOTHOLD_REG_GLOB="/sys/firmware/devicetree/base/reserved-memory/boothold@*/reg"
+RFHOLD_OFFSET=0xFF0
+RFHOLD_MAGIC=0x52464844	    # "RFHD" — keep in sync with boot/main.c
+
+# Defaults; conf values override.
+ALT_BAUD=230400
+ALT_PORT=6053
+ALT_BIND=0.0.0.0
+ALT_UNBIND=0
+
+read_conf() {
+    [ -f "$CONF" ] || return 0
+    val=$(grep '^ALT_BAUD=' "$CONF" | tail -1 | cut -d= -f2)
+    [ -n "$val" ] && ALT_BAUD="$val"
+    val=$(grep '^ALT_PORT=' "$CONF" | tail -1 | cut -d= -f2)
+    [ -n "$val" ] && ALT_PORT="$val"
+    val=$(grep '^ALT_BIND=' "$CONF" | tail -1 | cut -d= -f2)
+    [ -n "$val" ] && ALT_BIND="$val"
+    val=$(grep '^ALT_UNBIND=' "$CONF" | tail -1 | cut -d= -f2)
+    [ -n "$val" ] && ALT_UNBIND="$val"
+}
+
+disarm() {
+    [ -w "$SYSFS/enable" ] && echo 0 > "$SYSFS/enable"
+}
+
+# Wait until $1 exists, at most $2 seconds.
+wait_for() {
+    i=0
+    while [ ! -e "$1" ] && [ "$i" -lt "$2" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    [ -e "$1" ]
+}
+
+# Comment/uncomment the getty line in the userdata inittab.  Idempotent.
+getty_off() {
+    sed -i 's|^ttyS0::respawn:|#[altuart0] ttyS0::respawn:|' "$INITTAB" 2>/dev/null || true
+}
+
+getty_on() {
+    sed -i 's|^#\[altuart0\] ttyS0::respawn:|ttyS0::respawn:|' "$INITTAB" 2>/dev/null || true
+}
+
+# --- RFHOLD marker ("RFHD") --------------------------------------------------
+# A bootloader built with HOLD_RF_RESET=1 stamps this one-shot marker word
+# into the reserved boothold DRAM page while it holds the shared RF reset
+# LOW.  Presence means "the line is held; someone must pulse-release it".
+
+# Quietly check for the marker.  Returns 0 if present (and sets MARKER to
+# the KSEG1 address of the word); 1 if absent, the DT node is missing, or
+# the page is unreadable — the latter two print a diagnostic to stderr.
+rfmagic_check() {
+    REG=
+    for d in $BOOTHOLD_REG_GLOB; do
+        [ -f "$d" ] && REG="$d"
+    done
+    if [ -z "$REG" ]; then
+        echo "altuart0: WARNING boothold reg not found in devicetree;" \
+             "cannot tell whether the bootloader holds the RF reset" >&2
+        return 1
+    fi
+    [ -e /dev/mem ] || mknod /dev/mem c 1 1 2>/dev/null || true
+    PHYS=0x$(xxd -p -l 4 "$REG" | tr -d ' \n')
+    MARKER=$(((PHYS | 0xA0000000) + RFHOLD_OFFSET))
+    val=$(devmem "$MARKER" 2>/dev/null) || val=""
+    if [ -z "$val" ]; then
+        echo "altuart0: WARNING cannot read boothold page (no devmem?);" \
+             "if the bootloader holds the RF reset it must be released manually" >&2
+        return 1
+    fi
+    [ "$(printf '0x%08x' $((val & 0xFFFFFFFF)))" = \
+      "$(printf '0x%08x' $RFHOLD_MAGIC)" ]
+}
+
+# One-shot: clear the marker if present.  Returns 0 iff it was present.
+consume_rfmagic() {
+    rfmagic_check || return 1
+    devmem "$MARKER" 32 0 2>/dev/null || true
+}
+
+do_start() {
+    read_conf
+
+    # From here on, keep our own output off ttyS0: /dev/console IS ttyS0
+    # and every byte we print would land in the external device's RX once
+    # the reset gate opens.  Errors survive in the log.
+    {
+        if [ ! -d "$SYSFS" ]; then
+            echo "altuart0: bridge sysfs not found (pre-v3.0 kernel?)"
+            return 1
+        fi
+
+        # The getty handling below edits /userdata/etc/inittab, which only
+        # controls init when /etc/inittab links to it — i.e. on a rootfs
+        # built with HOLD_RF_RESET=1.  On a plain rootfs the squashfs file
+        # wins and a getty would keep respawning over our stream.
+        if [ ! -L /etc/inittab ]; then
+            echo "altuart0: ERROR /etc/inittab is not a symlink to /userdata/etc/inittab;"
+            echo "altuart0: rebuild the rootfs with HOLD_RF_RESET=1 (see build_rootfs.sh)"
+            return 1
+        fi
+
+        disarm
+
+        # Live-enable case: a getty may already be respawning on ttyS0.
+        # Comment its line out and stop the runner — busybox init is
+        # built without CONFIG_FEATURE_KILL_REMOVED, so the table reload
+        # (done by our caller) alone would leave the running getty
+        # holding the port (and tty_kopen_exclusive would fail -EBUSY).
+        if pidof getty >/dev/null 2>&1; then
+            getty_off
+            kill $(pidof getty) 2>/dev/null || true
+            sleep 1
+        fi
+
+        if [ "$ALT_UNBIND" = "1" ]; then
+            if [ -e "$PLAT_DRV/$PLAT_DEV" ]; then
+                echo "altuart0: unbinding $PLAT_DEV from of_serial"
+                echo "$PLAT_DEV" > "$PLAT_DRV/unbind" 2>/dev/null &&
+                    echo "altuart0: unbound"
+                sleep 1
+                echo "$PLAT_DEV" > "$PLAT_DRV/bind" 2>/dev/null &&
+                    echo "altuart0: rebound"
+                wait_for /sys/class/tty/ttyS0/device 10 ||
+                    echo "altuart0: WARNING ttyS0 did not come back"
+            else
+                echo "altuart0: $PLAT_DEV not bound to of_serial, skipping unbind"
+            fi
+        fi
+
+        wait_for /sys/class/tty/ttyS0/device 10 || {
+            echo "altuart0: ERROR ttyS0 missing, aborting (reset stays asserted)"
+            getty_on
+            return 1
+        }
+
+        # Kernel printk off the console.  The console itself stays
+        # registered (no bootarg/DTS change) — emergencies aside, the
+        # stream to the external device stays clean.
+        dmesg -n 1 2>/dev/null || true
+
+        echo "$ALT_BAUD" > "$SYSFS/baud"
+        echo "/dev/ttyS0" > "$SYSFS/tty"
+        echo "$ALT_BIND" > "$SYSFS/bind_addr"
+        echo "$ALT_PORT" > "$SYSFS/port"
+        echo "none" > "$SYSFS/flow_control"
+        echo 1 > "$SYSFS/enable"
+
+        if [ "$(cat "$SYSFS/armed")" != "1" ]; then
+            echo "altuart0: ERROR failed to arm bridge on ttyS0 (reset stays asserted)"
+            getty_on
+            return 1
+        fi
+        echo "altuart0: armed tcp://*$ALT_PORT <-> /dev/ttyS0 @$ALT_BAUD, flow none"
+
+        getty_off
+        consume_rfmagic
+
+        # Release the shared RF reset last, backgrounded and delayed: by
+        # then the caller has made init re-read its table (no getty, no
+        # askfirst prompt) and nothing prints on ttyS0 any more.  Note
+        # this also restarts the EFR32 — accepted interface contract of
+        # the mod.
+        (
+            sleep 10
+            echo 1 > "$SYSFS/nrst_pulse" 2>/dev/null &&
+                echo "altuart0: RF reset released (external device + EFR32 starting)" ||
+                echo "altuart0: WARNING nrst_pulse write failed"
+        ) >/dev/null 2>&1 </dev/null &
+    } >>"$LOG" 2>&1 </dev/null
+}
+
+do_stop() {
+    disarm
+    dmesg -n 5 2>/dev/null || true
+}
+
+# NOTE: there is deliberately no "radio-flash" retargeting here.  The
+# kernel bridge instance stays on ttyS0:6053 for the life of the mode;
+# ttyS1:8888 belongs to serialgateway (S60serialgateway), and EFR32
+# flashing (flash_efr32.sh, socket://<gw>:8888) goes straight through it.
+
+case "$1" in
+chk_enabled)
+    # Exit 0 = alt-uart0 mode active (marker present), 1 = not.
+    # Note: the brackets must be escaped for grep's basic regex.
+    grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null
+    ;;
+
+chk_rfmagic)
+    # Exit 0 = bootloader holds the shared RF reset (RFHD marker present).
+    rfmagic_check 2>/dev/null
+    ;;
+
+consume_rfmagic)
+    # One-shot: consume the RFHD marker if present.  Exit 0 iff consumed.
+    consume_rfmagic
+    ;;
+
+start)
+    if ! grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null; then
+        exit 0
+    fi
+    do_start
+    ;;
+
+stop)
+    do_stop
+    ;;
+
+restart|reload)
+    do_stop
+    sleep 1
+    if grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null; then
+        do_start
+    fi
+    ;;
+
+status)
+    if ! grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null; then
+        echo "altuart0: disabled (ttyS0 getty respawn entry is active in $INITTAB)"
+        exit 1
+    fi
+    read_conf
+    echo "altuart0: enabled  baud=$ALT_BAUD port=$ALT_PORT bind=$ALT_BIND unbind=$ALT_UNBIND"
+    if [ -r "$SYSFS/armed" ]; then
+        echo "bridge:   armed=$(cat "$SYSFS/armed") tty=$(cat "$SYSFS/tty" 2>/dev/null)"
+        cat "$SYSFS/stats" 2>/dev/null
+    fi
+    ;;
+
+console)
+    # Give ttyS0 back to the serial console: remove the marker so the
+    # caller's table reload brings the getty back, undo the printk
+    # silencing.  (Reload itself is the caller's job.)
+    disarm
+    dmesg -n 5 2>/dev/null || true
+    getty_on
+    echo "altuart0: getty restored (caller must reload init's table)"
+    ;;
+
+enable)
+    # Hand ttyS0 to the external device: add the marker (so the other
+    # init scripts see alt-uart0 mode on the next boot) and run the
+    # handover now.
+    disarm
+    getty_off
+    do_start
+    ;;
+
+*)
+    echo "Usage: $0 {chk_enabled|chk_rfmagic|consume_rfmagic|status|start|stop|restart|console|enable}"
+    exit 1
+    ;;
+esac
+
+# Propagate the action's status: the chk_* / consume_rfmagic actions are
+# consumed by callers via the exit code.
+exit $?

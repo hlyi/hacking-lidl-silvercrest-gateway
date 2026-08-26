@@ -85,11 +85,20 @@ RAM_DIR="/tmp/thread"
 # kills the supervisor before the child (killing a child alone would only
 # trigger a restart).
 . "$(dirname "$0")/supervise.func"
+ALTUART0="$(dirname "$0")/altuart0"
 OTBR_MONITOR="/usr/sbin/otbr-monitor"
 SRP_DONE_FLAG="/tmp/otbr-srp-recovery.done"
 
 case "$1" in
 start)
+    # In alt-uart0 mode (see /etc/init.d/altuart0) the EFR32 runs
+    # standalone z3-router firmware and ttyS1 has no host link —
+    # otbr-agent has nothing to talk to.
+    if "$ALTUART0" chk_enabled; then
+        echo "  otbr: skipped (alt-uart0 mode)"
+        exit 0
+    fi
+
     # Both bail-outs below announce themselves. This service does nothing on
     # every gateway that is not a Thread border router — a Zigbee box, or any
     # fresh install where the radio has not been flashed yet — and leaving

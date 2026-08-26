@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# S99enablealtuart0 — boot-order shim for the alt-uart0 mod.
+#
+# All functionality lives in /etc/init.d/altuart0 (see there).  This S99
+# wrapper exists for exactly two things:
+#
+#   1. Boot ordering: run the alt-uart0 handover LAST, after every other
+#      service has settled.
+#   2. The init table reload: on rf-hold builds /etc/inittab is a symlink
+#      to /userdata/etc/inittab that was unreadable when init started, so
+#      busybox fell back to its built-in defaults.  Once altuart0 has
+#      settled ttyS0 (bridge armed, getty commented out, printk
+#      silenced), we ask init to re-read the table.  On a plain rootfs
+#      /etc/inittab is a regular file init already parsed — no reload.
+#
+# There is deliberately no ::sysinit entry in /userdata/etc/inittab, so
+# the reload can never re-enter rcS.
+#
+
+ALTUART0="$(dirname "$0")/altuart0"
+
+# Re-read init's table — only when /etc/inittab really links into
+# /userdata; otherwise a HUP is pointless.
+reload_inittab() {
+    if [ -L /etc/inittab ]; then
+        kill -HUP 1 2>/dev/null && echo "altuart0: init table reloaded"
+    fi
+}
+
+case "$1" in
+start|"")
+    "$ALTUART0" start
+    reload_inittab
+    ;;
+
+stop)
+    "$ALTUART0" stop
+    reload_inittab
+    ;;
+
+restart|reload)
+    "$ALTUART0" restart
+    reload_inittab
+    ;;
+
+console|enable)
+    "$ALTUART0" "$1"
+    reload_inittab
+    ;;
+
+status|chk_enabled|chk_rfmagic|consume_rfmagic)
+    exec "$ALTUART0" "$1"
+    ;;
+
+*)
+    echo "Usage: $0 {start|stop|restart|status|console|enable}"
+    exit 1
+    ;;
+esac
+
+exit 0

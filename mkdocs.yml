@@ -85,6 +85,7 @@ nav:
     - Upgrade: docs/upgrading.md
     - Use and maintain the gateway: docs/using-the-gateway.md
     - Troubleshooting: docs/troubleshooting.md
+    - BLE proxy over ttyS0 (experimental): docs/ble-proxy.md
     - Backup and restore: 3-Main-SoC-Realtek-RTL8196E/30-Backup-Restore/README.md
     - Install and upgrade reference: 3-Main-SoC-Realtek-RTL8196E/35-Migration/README.md
   - Hardware:

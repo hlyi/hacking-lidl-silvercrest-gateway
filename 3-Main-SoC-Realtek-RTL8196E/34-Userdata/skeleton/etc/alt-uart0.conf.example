@@ -1,0 +1,44 @@
+# /userdata/etc/alt-uart0.conf — tuning for handing ttyS0 to an external device
+#
+# Whether ttyS0 belongs to an external device (e.g. an ESP32-C3 running
+# ESPHome's native API over UART — see docs/ble-proxy.md) is NOT set in
+# this file: it is derived from /userdata/etc/inittab, where the ttyS0
+# getty respawn entry commented out with the #[altuart0] marker means the
+# external device owns ttyS0 (rf-hold userdata images ship that way).
+#
+# Toggle with:
+#   /etc/init.d/S99enablealtuart0 enable    # add marker + hand ttyS0 over
+#   /etc/init.d/S99enablealtuart0 console   # remove marker + getty back
+#
+# While the marker is present:
+#   - S10rfreset leaves the shared RF reset held (the bootloader built
+#     with HOLD_RF_RESET=1 keeps it LOW through boot; S99 releases it),
+#   - S50uart_bridge does not claim the kernel bridge for ttyS1,
+#   - S70otbr does not start otbr-agent (the EFR32 runs standalone
+#     z3-router firmware, which needs no host link), and
+#   - S99enablealtuart0 arms the bridge as TCP <-> /dev/ttyS0, silences
+#     the console, reloads inittab without the getty, and releases the
+#     RF reset last.
+#
+# The matching bootloader must be flashed with HOLD_RF_RESET=1 so ttyS0
+# stays clean during boot. All keys optional; defaults shown.
+
+# Chip-side UART baud between the gateway and the external device. Both
+# ends must agree. Start conservative — ttyS0 has no flow control and a
+# 16-byte FIFO; watch `grep ttyS0 /proc/tty/driver/serial` (oe: field)
+# and the bridge stats before raising it.
+ALT_BAUD=230400
+
+# TCP port for the bridge. 6053 is the ESPHome native API default so
+# Home Assistant finds the device as a plain host entry.
+ALT_PORT=6053
+
+# Bridge listen address. Set to 127.0.0.1 to restrict access to SSH
+# tunnels only (see drivers/net/rtl8196e-uart-bridge/SECURITY.md).
+ALT_BIND=0.0.0.0
+
+# Experimental: unbind/rebind the UART0 platform device from of_serial
+# before arming, so ttyS0 comes up with no inherited console holders.
+# It panicked older kernels while a getty still held the port; S99 stops
+# that getty first, but keep 0 unless you have a reason.
+ALT_UNBIND=0

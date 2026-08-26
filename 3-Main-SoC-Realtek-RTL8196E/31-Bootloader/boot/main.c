@@ -83,6 +83,59 @@ extern unsigned long g_tftp_server_ip;
 
 void goToDownMode(void);
 
+#ifdef HOLD_RF_RESET
+#if BOARD_RF_RESET_GPIO < 10 || BOARD_RF_RESET_GPIO > 14
+#error "BOARD_RF_RESET_GPIO must be a port-B LED-shared pad (GPIO 10-14)"
+#endif
+/*
+ * Hold the RF reset line LOW for the whole boot.  Enabled at build time
+ * with HOLD_RF_RESET=1 (see build_bootloader.sh); the pad comes from
+ * BOARD_RF_RESET_GPIO in the board's board.h, so any board can opt in.
+ *
+ * Why this exists: pollingDownModeKeyword() treats a 0x1B seen on ttyS0
+ * as "abort boot and enter download mode".  A device wired to ttyS0 and
+ * powered at reset time (e.g. an ESP32 BLE proxy) emits framing garbage
+ * into that poll — a one-byte coin flip per cold boot.  Holding the
+ * shared RF reset from the first instruction of start_kernel()
+ * tri-states such a device, so ttyS0 stays clean for the loader, for
+ * ESC recovery, and for a USB-UART dongle; userspace releases the gate
+ * later (nrst_pulse) once it has taken the port over — or right away,
+ * on units that run without the external device.
+ *
+ * The pad must end up GPIO-mode, output, level LOW.  Order matters:
+ * mux and DATA first, DIR last — so there is no window where the pin
+ * drives HIGH.  The kernel's gpio-rtl819x does not clear CNR/DIR/DATA
+ * at probe and its `efr32-nrst` request only switches the mux to GPIO,
+ * so the LOW established here survives into userspace.
+ *
+ * Userspace cannot see this build flag, so after asserting the hold we
+ * stamp an "RFHD" marker into the (already reserved, no-map) boothold
+ * page — same one-shot handshake pattern as BOOTHOLD_MAGIC above.
+ * S10rfreset / S99enablealtuart0 read it via /dev/mem, then clear it:
+ *   marker offset 0xFF0 (below IP_RAM at 0xFF4, IP magic 0xFF8, HOLD 0xFFC)
+ */
+#define RFHOLD_MAGIC_RAM ((volatile unsigned long *)(BOOTHOLD_PAGE + 0xFF0))
+#define RFHOLD_MAGIC     0x52464844  /* "RFHD" */
+
+static void rf_reset_hold(void)
+{
+	const unsigned int bit = 1u << BOARD_RF_RESET_GPIO;
+
+	/* PIN_MUX_SEL2 mux field for pads B2-B6: 2 bits per pad starting
+	 * at bit 0 (GPIO10), i.e. field shift = (gpio - 10) * 3.
+	 * 0b11 = GPIO mode, disconnecting the ASIC LED controller. */
+	REG32(PIN_MUX_SEL2) |= 3 << ((BOARD_RF_RESET_GPIO - 10) * 3);
+
+	REG32(PABCDCNR_REG) &= ~bit;	/* peripheral function off -> GPIO */
+	REG32(PABCDDIR_REG) &= ~bit;	/* input while the level is set */
+	REG32(PABCDDAT_REG) &= ~bit;	/* output level LOW = reset asserted */
+	REG32(PABCDDIR_REG) |= bit;	/* now drive the line LOW */
+
+	/* Tell userspace. KSEG1 write, like the other boothold words. */
+	RFHOLD_MAGIC_RAM[0] = RFHOLD_MAGIC;
+}
+#endif /* HOLD_RF_RESET */
+
 /**
  * start_kernel - Main bootloader entry point (called from init_arch)
  *
@@ -97,6 +150,14 @@ void start_kernel(void)
 	IMG_HEADER_T header;
 	SETTING_HEADER_T setting_header;
 	//-------------------------------------------------------
+	/* First thing we do, before even the console comes up: hold the
+	 * shared RF reset LOW for the whole boot when built with
+	 * HOLD_RF_RESET=1.  Compiled out entirely otherwise, so a build
+	 * without the flag is byte-for-byte the pre-rf-hold binary. */
+#ifdef HOLD_RF_RESET
+	rf_reset_hold();
+#endif
+
 	setClkInitConsole();
 
 	initHeap();
@@ -142,7 +203,12 @@ void showBoardInfo(void)
 	prom_printf("Realtek RTL8196E  CPU: %dMHz  RAM: " BOARD_DRAM_BANNER
 		    "  Flash: %s\n",
 		    cpu_speed, g_flash_chip_name);
+#ifdef HOLD_RF_RESET
+	prom_printf("Bootloader: %s [rf-hold gpio%d] - %s - J. Nilo\n",
+		    B_VERSION, BOARD_RF_RESET_GPIO, BOOT_CODE_TIME);
+#else
 	prom_printf("Bootloader: %s - %s - J. Nilo\n", B_VERSION, BOOT_CODE_TIME);
+#endif
 }
 
 /**

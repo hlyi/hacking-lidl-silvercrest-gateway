@@ -62,6 +62,13 @@ ifneq ($(strip $(JUMP_ADDR)),)
 CFLAGS  += -DJUMP_ADDR=$(JUMP_ADDR)
 endif
 
+# HOLD_RF_RESET=1: hold the board's RF reset pad (BOARD_RF_RESET_GPIO in
+# boards/<board>/board.h) LOW for the whole boot and stamp an "RFHD"
+# marker into the boothold page so userspace can tell. See boot/main.c.
+ifneq ($(strip $(HOLD_RF_RESET)),)
+CFLAGS  += -DHOLD_RF_RESET=1
+endif
+
 # --- Source lists -----------------------------------------------------------
 
 ASM_SRCS = head.S inthandler.S

@@ -10,6 +10,7 @@
 
 #include "boot_common.h"
 #include "boot_soc.h"
+#include "board.h"
 #include "eth_api.h"
 #include <rtl_types.h>
 #include <rtl_errno.h>
@@ -20,6 +21,20 @@
 #define WRITE_MEM32(addr, val) (*(volatile unsigned int *)(addr)) = (val)
 #define WRITE_MEM16(addr, val) (*(volatile unsigned short *)(addr)) = (val)
 #define READ_MEM32(addr) (*(volatile unsigned int *)(addr))
+
+#ifdef HOLD_RF_RESET
+#if BOARD_RF_RESET_GPIO < 10 || BOARD_RF_RESET_GPIO > 14
+#error "BOARD_RF_RESET_GPIO must be a port-B LED-shared pad (GPIO 10-14)"
+#endif
+/* PIN_MUX_SEL2 LED fields: 3 bits per pad starting at bit 0 (GPIO10),
+ * i.e. field shift = (gpio - 10) * 3, plus the 7-bit S0-S3 field at
+ * bit 15.  Mask clearing every peripheral field EXCEPT the RF-reset
+ * gate pad's, which must stay in GPIO mode for the whole boot. */
+#define RF_LED_CLEAR_MASK                                                      \
+	((((3u << 0) | (3u << 3) | (3u << 6) | (3u << 9) | (3u << 12)) &       \
+	  ~(3u << ((BOARD_RF_RESET_GPIO - 10) * 3))) |                         \
+	 (7u << 15))
+#endif
 
 extern void delay_ms(unsigned int time_ms);
 
@@ -439,7 +454,16 @@ int32 swCore_init()
 	_rtl8651_clearSpecifiedAsicTable(TYPE_NETINTERFACE_TABLE,
 					 RTL865XC_NETINTERFACE_NUMBER);
 	// anson add
+#ifdef HOLD_RF_RESET
+	/* This write would flip every PIN_MUX_SEL2 field to peripheral
+	 * mode, including the pad holding the shared ESP32 reset gate
+	 * LOW since start_kernel() — exactly while a recovery console
+	 * may be in use.  Clear the LED fields but leave the gate pad's
+	 * field (GPIO mode) untouched. */
+	REG32(PIN_MUX_SEL2) = REG32(PIN_MUX_SEL2) & ~RF_LED_CLEAR_MASK;
+#else
 	REG32(PIN_MUX_SEL2) = 0;
+#endif
 	REG32(PCRP0) &= (0xFFFFFFFF - (0x00000000 | MacSwReset));
 	REG32(PCRP1) &= (0xFFFFFFFF - (0x00000000 | MacSwReset));
 	REG32(PCRP2) &= (0xFFFFFFFF - (0x00000000 | MacSwReset));
@@ -578,8 +602,14 @@ int32 swCore_init()
 	*/
 	REG32(PIN_MUX_SEL) &= ~((3 << 8) | (3 << 10) | (3 << 3) |
 				(1 << 15)); // let P0 to mii mode
+#ifdef HOLD_RF_RESET
+	/* Same preservation as above: clear the LED fields except the
+	 * reset-gate pad's, which stays in GPIO mode. */
+	REG32(PIN_MUX_SEL2) &= ~RF_LED_CLEAR_MASK; /* S0-S3, P0-P1 */
+#else
 	REG32(PIN_MUX_SEL2) &= ~((3 << 0) | (3 << 3) | (3 << 6) | (3 << 9) |
 				 (3 << 12) | (7 << 15)); // S0-S3, P0-P1
+#endif
 	REG32(LEDCR) = (2 << 20) | (0 << 18) | (0 << 16) | (0 << 14) |
 		       (0 << 12) | (0 << 10) | (0 << 8); // P0-P5
 

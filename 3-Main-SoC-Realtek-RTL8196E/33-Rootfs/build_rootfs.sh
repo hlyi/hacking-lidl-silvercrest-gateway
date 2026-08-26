@@ -28,6 +28,31 @@ done
 
 log() { [ "$QUIET" -eq 0 ] && echo "$@" || true; }
 
+# --- HOLD_RF_RESET ----------------------------------------------------------
+# Same flag and values as build_bootloader.sh: set it when flashing a
+# bootloader built with HOLD_RF_RESET=1 (external device on ttyS0, e.g. an
+# ESP32 BLE proxy).  In that configuration /etc/inittab is packaged as a
+# symlink to /userdata/etc/inittab so the getty can be commented out at
+# runtime; builds without the flag keep the plain stock file.
+# Flag parsing lives in the shared checker: lib/hold_rf_reset.sh.
+LIB_DIR="${SCRIPT_DIR}/../../lib"
+if [ ! -f "${LIB_DIR}/hold_rf_reset.sh" ]; then
+    echo "ERROR: ${LIB_DIR}/hold_rf_reset.sh not found" >&2
+    exit 1
+fi
+# shellcheck disable=SC1091
+. "${LIB_DIR}/hold_rf_reset.sh"
+hold_rf_reset_parse || exit 1
+
+INITTAB="skeleton/etc/inittab"
+INITTAB_STOCK=".inittab.stock"
+restore_inittab() {
+    if [ -f "$SCRIPT_DIR/$INITTAB_STOCK" ]; then
+        rm -f "$SCRIPT_DIR/$INITTAB"
+        mv "$SCRIPT_DIR/$INITTAB_STOCK" "$SCRIPT_DIR/$INITTAB"
+    fi
+}
+
 # Check that fakeroot is installed.
 # Errors go to stderr so they survive when this script is invoked with stdout
 # redirected to /dev/null (build_fullflash.sh -q, called by flash_install_rtl8196e.sh).
@@ -87,6 +112,18 @@ rm -f rootfs.sqfs rootfs.bin
 chmod 750 skeleton/root
 
 log "📦 Generating SquashFS with device nodes..."
+
+# rf-hold build: package /etc/inittab as a symlink into /userdata.  The
+# stock file is stashed outside skeleton/ and restored afterwards (even on
+# failure, via the EXIT trap) so the git tree stays clean.
+if [ "$RF_HOLD" = "1" ]; then
+    log "🔗 /etc/inittab -> /userdata/etc/inittab (rf-hold build)"
+    cp "$INITTAB" "$SCRIPT_DIR/$INITTAB_STOCK"
+    rm "$INITTAB"
+    ln -s /userdata/etc/inittab "$INITTAB"
+    trap restore_inittab EXIT
+fi
+
 if [ "$QUIET" -eq 1 ]; then
     fakeroot mksquashfs skeleton rootfs.sqfs \
       -nopad -noappend -all-root \
@@ -129,6 +166,10 @@ else
         -s r6cr >/dev/null
 fi
 
+# Restore the stock inittab now that the image is built.
+restore_inittab
+trap - EXIT
+
 # Remove intermediate file
 rm -f rootfs.sqfs
 
@@ -140,6 +181,7 @@ if [ "$QUIET" -eq 0 ]; then
     ls -lh rootfs.bin
     echo ""
     echo "Rootfs image ready: rootfs.bin ($(ls -lh rootfs.bin | awk '{print $5}'))"
+    echo "RF hold:   $RF_HOLD (inittab symlink in image: $([ "$RF_HOLD" = 1 ] && echo yes || echo no))"
     echo ""
     echo "To flash: ./flash_rootfs.sh"
 else

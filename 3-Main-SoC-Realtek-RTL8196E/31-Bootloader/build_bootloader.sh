@@ -43,6 +43,26 @@ if [ ! -f "$SCRIPT_DIR/boards/$BOARD/board.h" ]; then
     exit 1
 fi
 
+# --- HOLD_RF_RESET ----------------------------------------------------------
+# Set HOLD_RF_RESET=1 to build a bootloader that holds the board's RF
+# reset pad (BOARD_RF_RESET_GPIO in boards/<board>/board.h) LOW from the
+# first instruction until userspace releases it — for units with an
+# external device (e.g. an ESP32 BLE proxy) wired onto that line and
+# ttyS0. It also stamps an "RFHD" marker into the boothold page so the
+# gateway's init scripts can tell that the hold is active. See
+# boot/main.c and docs/ble-proxy.md. Default: off.
+# Flag parsing lives in the shared checker: lib/hold_rf_reset.sh.
+LIB_DIR="${SCRIPT_DIR}/../../lib"
+if [ ! -f "${LIB_DIR}/hold_rf_reset.sh" ]; then
+    echo "ERROR: ${LIB_DIR}/hold_rf_reset.sh not found" >&2
+    exit 1
+fi
+# shellcheck disable=SC1091
+. "${LIB_DIR}/hold_rf_reset.sh"
+hold_rf_reset_parse || exit 1
+HOLD_RF_RESET_VARS=""
+[ "$RF_HOLD" = "1" ] && HOLD_RF_RESET_VARS="HOLD_RF_RESET=1"
+
 # Toolchain - check project root first, then walk up the repo tree
 find_toolchain() {
     # Check in the project root directory (~/rtl8196e-gateway)
@@ -124,6 +144,7 @@ echo "Toolchain: $TOOLCHAIN_DIR"
 echo "Compiler:  $(${CROSS_PREFIX}gcc --version | head -1)"
 echo "Jump addr: $JUMP_ADDR"
 echo "Board:     $BOARD"
+echo "RF hold:   ${HOLD_RF_RESET:-0} (pin: BOARD_RF_RESET_GPIO in boards/$BOARD/board.h)"
 if [ -n "$REALTEK_TOOLS" ]; then
     echo "Realtek:   $REALTEK_TOOLS"
 else
@@ -140,9 +161,9 @@ BTCODE_VARS="CROSS=${CROSS_PREFIX} CVIMG=${REALTEK_TOOLS}/cvimg LZMA=${REALTEK_T
 # track CFLAGS changes.
 
 # --- boot variant ---
-echo "--- Building boot image (board: $BOARD) ---"
+echo "--- Building boot image (board: $BOARD, rf-hold: ${HOLD_RF_RESET:-0}) ---"
 make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" clean
-make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" boot JUMP_ADDR="$JUMP_ADDR" BOARD="$BOARD"
+make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" boot JUMP_ADDR="$JUMP_ADDR" BOARD="$BOARD" $HOLD_RF_RESET_VARS
 make -C "$SCRIPT_DIR/btcode" $BTCODE_VARS clean
 make -C "$SCRIPT_DIR/btcode" $BTCODE_VARS
 mkdir -p "$SCRIPT_DIR/boot-img/$BOARD"
@@ -152,7 +173,7 @@ cp -f "$SCRIPT_DIR/btcode/build/boot.bin" "$SCRIPT_DIR/boot-img/$BOARD/boot.bin"
 echo ""
 echo "--- Building ramtest variant ---"
 make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" clean
-make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" boot JUMP_ADDR="$JUMP_ADDR" BOARD="$BOARD" RAMTEST_TRACE=1
+make -C "$SCRIPT_DIR/boot" CROSS="$CROSS_PREFIX" boot JUMP_ADDR="$JUMP_ADDR" BOARD="$BOARD" RAMTEST_TRACE=1 $HOLD_RF_RESET_VARS
 make -C "$SCRIPT_DIR/btcode" $BTCODE_VARS clean
 make -C "$SCRIPT_DIR/btcode" $BTCODE_VARS RAMTEST_TRACE=1
 
