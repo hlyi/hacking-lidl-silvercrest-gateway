@@ -189,7 +189,8 @@ do_start() {
 
         wait_for /sys/class/tty/ttyS0/device 10 || {
             echo "altuart0: ERROR ttyS0 missing, aborting (reset stays asserted)"
-            getty_on
+            # do NOT call getty_on - the #[altuart0] marker must persist
+            # as set at build time, not be erased by runtime conditions.
             return 1
         }
 
@@ -207,7 +208,8 @@ do_start() {
 
         if [ "$(cat "$SYSFS/armed")" != "1" ]; then
             echo "altuart0: ERROR failed to arm bridge on ttyS0 (reset stays asserted)"
-            getty_on
+            # do NOT call getty_on - the #[altuart0] marker must persist
+            # as set at build time, not be erased by runtime conditions.
             return 1
         fi
         echo "altuart0: armed tcp://*$ALT_PORT <-> /dev/ttyS0 @$ALT_BAUD, flow none"
@@ -257,9 +259,10 @@ consume_rfmagic)
     ;;
 
 start)
-    if ! grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null; then
-        exit 0
-    fi
+    # Proceed to do_start - the #[altuart0] marker is expected to be present
+    # as set at build time.  If it was somehow stripped (e.g. during early
+    # init re-read before S99enablealtuart0 runs), S99enablealtuart0 will
+    # restore it via reload_inittab().
     do_start
     ;;
 

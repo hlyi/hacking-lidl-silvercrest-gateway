@@ -32,6 +32,12 @@ case "$1" in
 start|"")
     "$ALTUART0" start
     reload_inittab
+    # Ensure #[altuart0] marker persists after init re-reads the table.
+    # This is idempotent — if the marker is already present, sed does not
+    # match ^ttyS0::respawn: and the file is not unnecessarily modified.
+    if [ -f /userdata/etc/inittab ]; then
+        sed -i 's|^ttyS0::respawn:|#[altuart0] ttyS0::respawn:|' /userdata/etc/inittab 2>/dev/null || true
+    fi
     ;;
 
 stop)
