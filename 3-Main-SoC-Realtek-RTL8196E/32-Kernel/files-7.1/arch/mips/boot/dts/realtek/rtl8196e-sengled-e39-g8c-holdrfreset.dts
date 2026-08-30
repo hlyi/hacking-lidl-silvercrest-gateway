@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// Sengled G4 — HOLD_RF_RESET variant (kernel 7.1 line)
+//
+// Same as the base G4 DTS but overrides the chosen node to disable the
+// serial console on ttyS0.  This frees ttyS0 for the in-kernel
+// rtl8196e_uart_bridge (ESP32-C3 BLE proxy), while earlycon + stdout-path
+// preserves the early boot log via the DT UART node.
+//
+// Build:
+//   KERNEL=7.1 BOARD=sengled-e39-g8c-holdrfreset HOLD_RF_RESET=1 ./build_kernel.sh
+//
+#include "rtl8196e-sengled-e39-g8c.dts"
+
+/ {
+	chosen {
+		bootargs = "earlycon console=ttynull loglevel=7 root=/dev/mtdblock2 rootfstype=squashfs";
+		stdout-path = "serial@2000:115200n8";
+	};
+};

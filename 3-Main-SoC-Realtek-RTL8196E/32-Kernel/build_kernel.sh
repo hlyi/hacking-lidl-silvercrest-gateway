@@ -122,6 +122,19 @@ case "$BOARD" in
         ;;
 esac
 
+# HOLD_RF_RESET: select the serial-console-disabled DTS variant for boards
+# that ship one.  The user still passes BOARD=<name>; the flag picks the
+# matching _HOLDRFRESET Kconfig entry automatically.
+case "${HOLD_RF_RESET:-0}" in
+    1|[Tt]rue|[Yy]es|[Oo]n)
+        case "$BOARD" in
+            sengled-e39-g8c)
+                BOARD_DTB_SYM="CONFIG_DTB_RTL8196E_SENGLED_E39_G8C_HOLDRFRESET"
+                ;;
+        esac
+        ;;
+esac
+
 # Pre-built image slot for this (board, kernel) pair. build_kernel.sh writes
 # straight into the shippable kernel-img/<board>/kernel-<line>.img layout that
 # the flash scripts resolve from BOARD/KERNEL (see lib/kernel_image.sh).
@@ -320,6 +333,18 @@ if ! grep -q "^${BOARD_DTB_SYM}=y" .config; then
     make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
     echo ""
 fi
+
+# HOLD_RF_RESET: disable serial console on ttyS0, enable ttynull device.
+if [ "${HOLD_RF_RESET:-0}" = "1" ]; then
+    if ! grep -q '^CONFIG_NULL_TTY=y' .config; then
+        echo "Fixing .config: enabling CONFIG_NULL_TTY for HOLD_RF_RESET..."
+        sed -i 's/^# CONFIG_NULL_TTY is not set$/CONFIG_NULL_TTY=y/' .config
+        grep -q '^CONFIG_NULL_TTY=y' .config || echo "CONFIG_NULL_TTY=y" >> .config
+        NEED_OLDDEFCONFIG=true
+    fi
+fi
+
+[ "$NEED_OLDDEFCONFIG" = true ] && make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig && echo ""
 
 # Profiling reference for the I-MEM optimizer.  Keep it in an isolated build
 # tree (BUILD_TAG=imem-profile) and make the window genuinely empty: the PC

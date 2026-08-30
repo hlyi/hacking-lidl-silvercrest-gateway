@@ -49,6 +49,18 @@ choice
 		depends on SOC_RTL8196E
 		select BUILTIN_DTB
 
+	config DTB_RTL8196E_SENGLED_E39_G8C_HOLDRFRESET
+		bool "Sengled G4 — HOLD_RF_RESET (serial console disabled)"
+		depends on SOC_RTL8196E
+		select BUILTIN_DTB
+		help
+		  G4 DTS variant that moves the console off ttyS0
+		  (console=ttynull) so the in-kernel uart_bridge can
+		  claim ttyS0 exclusively.  Early boot log is preserved
+		  via earlycon + stdout-path.  Select this when building
+		  with HOLD_RF_RESET=1 for the ESP32-C3 BLE proxy
+		  use case.
+
 endchoice
 
 config RTL8196E_IMEM
