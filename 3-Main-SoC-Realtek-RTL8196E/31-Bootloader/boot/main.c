@@ -124,12 +124,11 @@ static void rf_reset_hold(void)
 	/* PIN_MUX_SEL2 mux field for pads B2-B6: 2 bits per pad starting
 	 * at bit 0 (GPIO10), i.e. field shift = (gpio - 10) * 3.
 	 * 0b11 = GPIO mode, disconnecting the ASIC LED controller. */
-	REG32(PIN_MUX_SEL2) |= 3 << ((BOARD_RF_RESET_GPIO - 10) * 3);
 
-	REG32(PABCDCNR_REG) &= ~bit;	/* peripheral function off -> GPIO */
-	REG32(PABCDDIR_REG) &= ~bit;	/* input while the level is set */
 	REG32(PABCDDAT_REG) &= ~bit;	/* output level LOW = reset asserted */
 	REG32(PABCDDIR_REG) |= bit;	/* now drive the line LOW */
+	REG32(PIN_MUX_SEL2) |= 3 << ((BOARD_RF_RESET_GPIO - 10) * 3);
+	REG32(PABCDCNR_REG) &= ~bit;	/* peripheral function off -> GPIO */
 
 	/* Tell userspace. KSEG1 write, like the other boothold words. */
 	RFHOLD_MAGIC_RAM[0] = RFHOLD_MAGIC;
