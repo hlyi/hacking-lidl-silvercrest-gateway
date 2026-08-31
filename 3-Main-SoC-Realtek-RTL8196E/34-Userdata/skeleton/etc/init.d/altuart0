@@ -119,8 +119,8 @@ rfmagic_check() {
         return 1
     fi
     [ -e /dev/mem ] || mknod /dev/mem c 1 1 2>/dev/null || true
-    PHYS=0x$(xxd -p -l 4 "$REG" | tr -d ' \n')
-    MARKER=$(((PHYS | 0xA0000000) + RFHOLD_OFFSET))
+    PHYS=0x$(xxd -p -l 4 "$REG" )
+    MARKER=$((PHYS + RFHOLD_OFFSET))
     val=$(devmem "$MARKER" 2>/dev/null) || val=""
     if [ -z "$val" ]; then
         echo "altuart0: WARNING cannot read boothold page (no devmem?);" \
@@ -189,8 +189,7 @@ do_start() {
 
         wait_for /sys/class/tty/ttyS0/device 10 || {
             echo "altuart0: ERROR ttyS0 missing, aborting (reset stays asserted)"
-            # do NOT call getty_on - the #[altuart0] marker must persist
-            # as set at build time, not be erased by runtime conditions.
+            # getty_on
             return 1
         }
 
@@ -208,8 +207,7 @@ do_start() {
 
         if [ "$(cat "$SYSFS/armed")" != "1" ]; then
             echo "altuart0: ERROR failed to arm bridge on ttyS0 (reset stays asserted)"
-            # do NOT call getty_on - the #[altuart0] marker must persist
-            # as set at build time, not be erased by runtime conditions.
+            # getty_on
             return 1
         fi
         echo "altuart0: armed tcp://*$ALT_PORT <-> /dev/ttyS0 @$ALT_BAUD, flow none"
@@ -259,10 +257,9 @@ consume_rfmagic)
     ;;
 
 start)
-    # Proceed to do_start - the #[altuart0] marker is expected to be present
-    # as set at build time.  If it was somehow stripped (e.g. during early
-    # init re-read before S99enablealtuart0 runs), S99enablealtuart0 will
-    # restore it via reload_inittab().
+    if ! grep -q '^#\[altuart0\] ttyS0::respawn:' "$INITTAB" 2>/dev/null; then
+        exit 0
+    fi
     do_start
     ;;
 
