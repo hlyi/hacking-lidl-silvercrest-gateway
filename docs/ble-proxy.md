@@ -80,7 +80,7 @@ HOLD_RF_RESET=true BOARD=lidl           ./build_bootloader.sh # Lidl: gpio 12
   boothold DRAM page, so init scripts can tell at runtime that the hold
   is active (the build flag itself is invisible to userspace).
 - Userspace releases the gate via the existing `nrst_pulse` knob:
-  early (`S10rfreset`) on units that keep ttyS0 as console, late
+  early (`S08rfreset`) on units that keep ttyS0 as console, late
   (`altuart0 start`, invoked by the S99 shim) once the bridge owns
   ttyS0.
 
@@ -89,7 +89,7 @@ HOLD_RF_RESET=true BOARD=lidl           ./build_bootloader.sh # Lidl: gpio 12
 | Piece | Purpose |
 | --- | --- |
 | `/etc/inittab -> /userdata/etc/inittab` symlink | Packaged only when the rootfs is built with `HOLD_RF_RESET=1` (same flag as the bootloader). init reads the table before `/userdata` is mounted and falls back to built-ins (`rcS`); the table is only re-read (`kill -HUP 1`) by the `S99enablealtuart0` shim, which is also the only place the getty respawn is controlled. Plain builds keep the stock regular file, and the handover refuses to run on them. |
-| `S10rfreset` | On units not in alt-uart0 mode (ttyS0 getty respawn entry active in the userdata inittab): if the bootloader stamped the `RFHD` hold marker (read via `/dev/mem` at the boothold page), consume it and pulse-release the RF reset so the radio starts normally. No-op on stock bootloaders. |
+| `S08rfreset` | On units not in alt-uart0 mode (ttyS0 getty respawn entry active in the userdata inittab): if the bootloader stamped the `RFHD` hold marker (read via `/dev/mem` at the boothold page), consume it and pulse-release the RF reset so the radio starts normally. No-op on stock bootloaders. |
 | `S50uart_bridge` guard | Skips arming in alt-uart0 mode — the kernel bridge belongs to ttyS0 (`altuart0`), never ttyS1. |
 | `S60serialgateway` | Userspace TCP<->serial bridge for ttyS1 (:8888), started only in alt-uart0 mode (the kernel bridge is busy with ttyS0). Gives Home Assistant direct access to the z3-router coordinator and carries EFR32 flashing traffic. Baud follows radio.conf `FIRMWARE_BAUD`. |
 | `S70otbr` guard | Skips otbr-agent in alt-uart0 mode — the EFR32 runs standalone z3-router, ttyS1 belongs to serialgateway. |
