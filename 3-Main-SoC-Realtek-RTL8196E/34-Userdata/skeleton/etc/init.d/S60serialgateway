@@ -55,7 +55,7 @@ start)
 
     read_baud
     echo "  serialgateway: tcp://*$PORT <-> /dev/ttyS1 @$BAUD"
-    "$BIN" -p "$PORT" -d /dev/ttyS1 -b "$BAUD" -q
+    "$BIN" -p "$PORT" -d /dev/ttyS1 -b "$BAUD" -q -f
     ;;
 
 stop)

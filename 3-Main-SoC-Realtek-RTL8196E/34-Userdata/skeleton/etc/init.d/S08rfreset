@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# S10rfreset — release the shared RF reset early on units that do not
+# S08rfreset — release the shared RF reset early on units that do not
 #              hand ttyS0 to an external device.
 #
 # A bootloader flashed with HOLD_RF_RESET=1 (see build_bootloader.sh)

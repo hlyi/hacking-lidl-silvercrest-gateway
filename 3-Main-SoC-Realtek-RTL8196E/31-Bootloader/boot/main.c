@@ -111,7 +111,7 @@ void goToDownMode(void);
  * Userspace cannot see this build flag, so after asserting the hold we
  * stamp an "RFHD" marker into the (already reserved, no-map) boothold
  * page — same one-shot handshake pattern as BOOTHOLD_MAGIC above.
- * S10rfreset / S99enablealtuart0 read it via /dev/mem, then clear it:
+ * S08rfreset / S99enablealtuart0 read it via /dev/mem, then clear it:
  *   marker offset 0xFF0 (below IP_RAM at 0xFF4, IP magic 0xFF8, HOLD 0xFFC)
  */
 #define RFHOLD_MAGIC_RAM ((volatile unsigned long *)(BOOTHOLD_PAGE + 0xFF0))

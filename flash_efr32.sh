@@ -690,6 +690,12 @@ if [ ! -d "$BRIDGE_SYSFS" ]; then
     exit 0
 fi
 
+# Which tty is the kernel bridge bound to?  In alt-uart0 mode it serves
+# ttyS0 (ESP32); the EFR32 on ttyS1 goes through serialgateway.  The
+# flash script must reconfigure the kernel bridge to ttyS1 before flashing.
+BRIDGE_TTY=$(cat "$BRIDGE_SYSFS/tty" 2>/dev/null || echo "")
+emit BRIDGE_TTY "$BRIDGE_TTY"
+
 # Mode is the source of truth for who owns ttyS1:
 #   Zigbee : S50uart_bridge arms the bridge at boot
 #   OTBR   : otbr-agent (started by S70otbr) holds ttyS1; bridge disarmed
@@ -778,6 +784,7 @@ CURRENT_BAUD=$(detect_get BAUD)
 SELF_ARMED=$(detect_get SELF_ARMED)
 PEER=$(detect_get PEER)
 GW_MODEL=$(detect_get MODEL)
+BRIDGE_TTY=$(detect_get BRIDGE_TTY)
 
 case "$DETECT_STATUS" in
     ok) ;;
@@ -788,7 +795,7 @@ case "$DETECT_STATUS" in
         ;;
     not-armed)
         echo "Error: UART bridge is not armed on ${GW_IP}." >&2
-        echo "Check S50uart_bridge init script; or arm manually:" >&2
+        echo "Check S50uart_bridge (standard) or altuart0 (alt-uart0 mode) init scripts; or arm manually:" >&2
         echo "  echo 1 > ${BRIDGE_SYSFS}/enable" >&2
         exit 1
         ;;
@@ -873,6 +880,12 @@ REMOTE_EOF
 RADIO_MODE="${RADIO_MODE:-zigbee}"
 CURRENT_BAUD="${CURRENT_BAUD:-115200}"
 
+# Capture the detected baud before reconciliation — in alt-uart0 mode
+# the reconciliation writes to the wrong UART (ttyS0/ESP32 instead of
+# ttyS1/EFR32), so we need the pre-reconciliation value to restore the
+# ESP32's baud in cleanup.
+DETECTED_BAUD="$CURRENT_BAUD"
+
 if [ -n "$CONFIG_BAUD" ]; then
     if ! echo "$CONFIG_BAUD" | grep -qE '^[0-9]+$'; then
         echo "Warning: ignoring invalid FIRMWARE_BAUD in radio.conf: '$CONFIG_BAUD'" >&2
@@ -904,10 +917,69 @@ else
     echo "Detected: ${RADIO_MODE} @ ${CURRENT_BAUD} baud (bridge armed)"
 fi
 
+# --- Alt-uart0 mode detection -----------------------------------------------
+# In alt-uart0 mode the kernel bridge is bound to ttyS0 (ESP32) — we need
+# it on ttyS1 (EFR32) for flashing.  Detect this and save the original
+# settings so cleanup can restore them.
+ALTUART0_MODE=0
+ORIG_TTY=""
+ORIG_PORT=""
+if echo "$BRIDGE_TTY" | grep -q '/dev/ttyS0'; then
+    ALTUART0_MODE=1
+    ORIG_TTY="/dev/ttyS0"
+    ORIG_PORT=$(ssh_gw "cat ${BRIDGE_SYSFS}/port 2>/dev/null" || echo "6053")
+    echo "Alt-uart0 mode detected: bridge is on ttyS0 (port ${ORIG_PORT})."
+    echo "Will reconfigure bridge to ttyS1 for EFR32 flashing."
+fi
+
 # Remember the original baud so we can restore it at cleanup (in case the
 # flash fails halfway — the bridge would otherwise be left at 115200 and
 # any zigbeed/otbr-agent trying to restart would talk at the wrong speed).
-ORIG_BAUD="$CURRENT_BAUD"
+# In alt-uart0 mode, use the pre-reconciliation baud (ESP32's baud) since
+# the reconciliation wrote to the wrong UART.
+if [ "$ALTUART0_MODE" = "1" ]; then
+    ORIG_BAUD="$DETECTED_BAUD"
+else
+    ORIG_BAUD="$CURRENT_BAUD"
+fi
+
+# --- Alt-uart0 bridge takeover -----------------------------------------------
+# In alt-uart0 mode the kernel bridge serves ttyS0 (ESP32) at port 6053.
+# The EFR32 lives on ttyS1 and is served by serialgateway at port 8888.
+# For flashing we need the kernel bridge on ttyS1 at port 8888, so stop
+# serialgateway and reconfigure the kernel bridge.
+if [ "$ALTUART0_MODE" = "1" ]; then
+    # The flash script reconfigures baud as needed during the flash
+    # process (115200 for Gecko Bootloader, app baud for probe).
+    # Start at 115200 — the safe default the bootloader always supports.
+    EFR32_BAUD=115200
+    echo "Reconfiguring kernel bridge: ttyS0 -> ttyS1, port ${ORIG_PORT} -> 8888, baud ${EFR32_BAUD}..."
+    ssh_gw "
+        # Stop serialgateway (frees ttyS1 and TCP:8888)
+        killall serialgateway 2>/dev/null || true
+        sleep 1
+        # Disarm the kernel bridge, reconfigure, re-arm
+        echo 0 > ${BRIDGE_SYSFS}/enable 2>/dev/null || true
+        sleep 0.5
+        echo /dev/ttyS1 > ${BRIDGE_SYSFS}/tty
+        echo 8888 > ${BRIDGE_SYSFS}/port
+        echo ${EFR32_BAUD} > ${BRIDGE_SYSFS}/baud
+        echo 0 > ${BRIDGE_SYSFS}/flow_control
+        echo 1 > ${BRIDGE_SYSFS}/enable
+        sleep 1
+        # Verify
+        if [ \"\$(cat ${BRIDGE_SYSFS}/armed 2>/dev/null)\" != '1' ]; then
+            echo 'ERROR: bridge failed to arm on ttyS1'
+            exit 1
+        fi
+    " || {
+        echo "Error: failed to reconfigure kernel bridge for ttyS1 on ${GW_IP}." >&2
+        echo "The bridge may be in an inconsistent state. Reboot the gateway." >&2
+        exit 1
+    }
+    CURRENT_BAUD="$EFR32_BAUD"
+    echo "Kernel bridge reconfigured: ttyS1 @ ${EFR32_BAUD} baud, port 8888."
+fi
 
 # Switch bridge to flash mode: stop daemons, optionally disable RTS/CTS.
 # The bridge stays armed — TCP:8888 never drops.
@@ -1007,16 +1079,40 @@ router_cli_to_bootloader() {
 # etc.) before manually rebooting.
 FLASH_OK=0
 cleanup() {
+    # In alt-uart0 mode, restore the kernel bridge to ttyS0 and restart
+    # serialgateway before restoring baud/flow_control.
+    if [ "${ALTUART0_MODE:-0}" = "1" ]; then
+        ssh_gw "
+            echo 0 > ${BRIDGE_SYSFS}/enable 2>/dev/null || true
+            sleep 0.5
+            echo ${ORIG_TTY:-/dev/ttyS0} > ${BRIDGE_SYSFS}/tty 2>/dev/null || true
+            echo ${ORIG_PORT:-6053} > ${BRIDGE_SYSFS}/port 2>/dev/null || true
+            echo 1 > ${BRIDGE_SYSFS}/enable 2>/dev/null || true
+            sleep 1
+            # Restart serialgateway for ttyS1
+            /userdata/etc/init.d/S60serialgateway start 2>/dev/null || true
+        " >/dev/null 2>&1 || true
+    fi
+
     # Re-enable flow control: request hw (1); the bridge clamps it to sw on a
     # board without RTS/CTS wiring, so this restores the board-appropriate mode.
+    # In alt-uart0 mode the bridge uses flow_control=0 (none) for the ESP32.
+    if [ "${ALTUART0_MODE:-0}" = "1" ]; then
+        RESTORE_FC=0
+    else
+        RESTORE_FC=1
+    fi
     ssh_gw "
         echo ${ORIG_BAUD} > ${BRIDGE_SYSFS}/baud 2>/dev/null || true
-        echo 1 > ${BRIDGE_SYSFS}/flow_control 2>/dev/null || true
+        echo ${RESTORE_FC} > ${BRIDGE_SYSFS}/flow_control 2>/dev/null || true
     " >/dev/null 2>&1 || true
 
     if [ "$FLASH_OK" != "1" ]; then
         echo "" >&2
         echo "Gateway state restored to baud=${ORIG_BAUD}, flow control re-enabled." >&2
+        if [ "${ALTUART0_MODE:-0}" = "1" ]; then
+            echo "Alt-uart0 mode restored: bridge on ${ORIG_TTY:-/dev/ttyS0}:${ORIG_PORT:-6053}, serialgateway restarted." >&2
+        fi
         echo "Flash did not complete successfully. To reboot manually:" >&2
         echo "  ssh root@${GW_IP} reboot" >&2
     fi

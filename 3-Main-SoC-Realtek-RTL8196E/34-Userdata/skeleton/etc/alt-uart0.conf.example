@@ -11,7 +11,7 @@
 #   /etc/init.d/S99enablealtuart0 console   # remove marker + getty back
 #
 # While the marker is present:
-#   - S10rfreset leaves the shared RF reset held (the bootloader built
+#   - S08rfreset leaves the shared RF reset held (the bootloader built
 #     with HOLD_RF_RESET=1 keeps it LOW through boot; S99 releases it),
 #   - S50uart_bridge does not claim the kernel bridge for ttyS1,
 #   - S70otbr does not start otbr-agent (the EFR32 runs standalone
